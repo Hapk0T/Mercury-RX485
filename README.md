@@ -55,45 +55,45 @@ void search();
 void connect(byte level = 1, const char* password = "111111");
 ```
 
-- `level`: Уровень доступа (опционально).
-- `password`: Пароль для подключения (опционально).
+- `level`: Уровень доступа 1 или 2 (опционально).
+- `password`: 6-значный пароль для подключения (опционально).
 
 ### Получение данных
 
 #### Активная мощность
 
 ```cpp
-float* powerP();
+float* powerP(); // 4 значения, общая по фазам и по каждой фазе
 ```
 
 #### Реактивная мощность
 
 ```cpp
-float* powerQ();
+float* powerQ(); // 4 значения, общая по фазам и по каждой фазе
 ```
 
 #### Полная мощность
 
 ```cpp
-float* powerS();
+float* powerS(); // 4 значения, общая по фазам и по каждой фазе
 ```
 
 #### Напряжение
 
 ```cpp
-float* voltage();
+float* voltage(); // 3 значения, 1 фаза, 2 фаза и 3 фаза
 ```
 
 #### Ток
 
 ```cpp
-float* current();
+float* current(); // 3 значения, 1 фаза, 2 фаза и 3 фаза
 ```
 
 #### Коэффициент мощности
 
 ```cpp
-float* powerFactor();
+float* powerFactor(); // 4 значения, общий по фазам и по каждой фазе
 ```
 
 #### Частота
@@ -111,12 +111,12 @@ int temperature();
 #### Энергия
 
 ```cpp
-float* energyTaAr();
-float* energyTaF();
-float* energyT1Ar();
-float* energyT1F();
-float* energyT2Ar();
-float* energyT2F();
+float* energyTaAr(); // 3 значения, 1 фаза, 2 фаза и 3 фаза
+float* energyTaF(); // 4 значения, общая по фазам и по каждой фазе
+float* energyT1Ar(); // 3 значения, 1 фаза, 2 фаза и 3 фаза
+float* energyT1F(); // 4 значения, общая по фазам и по каждой фазе
+float* energyT2Ar(); //3 значения, 1 фаза, 2 фаза и 3 фаза
+float* energyT2F(); // 4 значения, общая по фазам и по каждой фазе
 ```
 
 ## Тонкости работы с библиотекой
