@@ -304,7 +304,7 @@ float* Mercury::energyTaAr() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
@@ -322,7 +322,7 @@ float* Mercury::energyTaF() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
@@ -340,7 +340,7 @@ float* Mercury::energyT1Ar() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
@@ -358,7 +358,7 @@ float* Mercury::energyT1F() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
@@ -376,7 +376,7 @@ float* Mercury::energyT2Ar() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
@@ -394,7 +394,7 @@ float* Mercury::energyT2F() {
     }
 
     for (int i = 0; i < 4; i++) {
-        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) | (response[1 + i * 4] << 16);
+        unsigned long value = (response[3 + i * 4] & 0x3F) | (response[4 + i * 4] << 8) | (response[1 + i * 4] << 16);
         energy[i] = value / 100.0;
     }
     return energy;
