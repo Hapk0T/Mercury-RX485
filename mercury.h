@@ -8,6 +8,7 @@ class Mercury {
 public:
     Mercury(int rxPin, int txPin, int dePin = -1, int rePin = -1, bool enableDirInfo = false, bool debug = false);
     void begin(byte id = 0, long baud_rate = 9600, int read_delay = 150, int send_delay = 2);
+    void useHardwareSerial(HardwareSerial* port);
     void search();
     void connect(byte level = 1, const char* password = "111111");
     float* powerP();
@@ -27,6 +28,7 @@ public:
 
     bool dir_a;
     bool dir_r;
+    bool isConnected() const { return connected; }
 
 private:
     int rxPin, txPin, dePin, rePin;
@@ -34,6 +36,7 @@ private:
     byte devId;
     long baud_rate;
     int read_delay, send_delay;
+    bool connected;
     SoftwareSerial* softSerial;
     HardwareSerial* hardSerial;
 
