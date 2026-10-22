@@ -2,7 +2,17 @@
 #define MERCURY_H
 
 #include <Arduino.h>
+
+// SoftwareSerial есть не на всех платформах: отсутствует в ядре ESP32,
+// поэтому программный UART там недоступен — используйте HardwareSerial
+// (Serial1/Serial2) через useHardwareSerial(). На Arduino AVR и ESP8266
+// библиотека SoftwareSerial входит в стандартный набор.
+#if !defined(ESP32)
+#define MERCURY_HAS_SOFTWARE_SERIAL 1
 #include <SoftwareSerial.h>
+#else
+#define MERCURY_HAS_SOFTWARE_SERIAL 0
+#endif
 
 class Mercury {
 public:
@@ -37,7 +47,9 @@ private:
     long baud_rate;
     int read_delay, send_delay;
     bool connected;
+#if MERCURY_HAS_SOFTWARE_SERIAL
     SoftwareSerial* softSerial;
+#endif
     HardwareSerial* hardSerial;
 
     void sendCmd(byte addr, byte* cmd, int s, byte* response);

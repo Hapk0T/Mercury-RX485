@@ -1,7 +1,21 @@
 #include "mercury.h"
 
+// Единая точка доступа к активному порту: SoftwareSerial (Arduino/ESP8266)
+// или HardwareSerial (любая платформа, включая ESP32).
+#if MERCURY_HAS_SOFTWARE_SERIAL
+#define MERC_PORT_AVAILABLE() (softSerial ? softSerial->available() : hardSerial->available())
+#define MERC_PORT_READ()      (softSerial ? softSerial->read() : hardSerial->read())
+#else
+#define MERC_PORT_AVAILABLE() (hardSerial->available())
+#define MERC_PORT_READ()      (hardSerial->read())
+#endif
+
 Mercury::Mercury(int rxPin, int txPin, int dePin, int rePin, bool enableDirInfo, bool debug)
-    : rxPin(rxPin), txPin(txPin), dePin(dePin), rePin(rePin), enableDirInfo(enableDirInfo), debug(debug), devId(0), dir_a(false), dir_r(false), connected(false), softSerial(nullptr), hardSerial(nullptr) {}
+    : rxPin(rxPin), txPin(txPin), dePin(dePin), rePin(rePin), enableDirInfo(enableDirInfo), debug(debug), devId(0), dir_a(false), dir_r(false), connected(false), hardSerial(nullptr)
+#if MERCURY_HAS_SOFTWARE_SERIAL
+    , softSerial(nullptr)
+#endif
+    {}
 
 void Mercury::begin(byte id, long baud_rate, int read_delay, int send_delay) {
     this->devId = id;
@@ -21,7 +35,12 @@ void Mercury::begin(byte id, long baud_rate, int read_delay, int send_delay) {
     if (hardSerial != nullptr) {
         // caller opted into hardware UART via useHardwareSerial()
         hardSerial->begin(baud_rate);
-    } else if (softSerial == nullptr) {
+        return;
+    }
+#if MERCURY_HAS_SOFTWARE_SERIAL
+    // Программный UART (Arduino AVR / ESP8266): работает и с авто-конвертерами,
+    // и с MAX485 (пины DE/RE задаются в конструкторе).
+    if (softSerial == nullptr) {
         softSerial = new SoftwareSerial(rxPin, txPin);
         softSerial->begin(baud_rate);
     } else {
@@ -30,22 +49,37 @@ void Mercury::begin(byte id, long baud_rate, int read_delay, int send_delay) {
         softSerial = new SoftwareSerial(rxPin, txPin);
         softSerial->begin(baud_rate);
     }
+#else
+    // На ESP32 библиотеки SoftwareSerial в ядре нет — доступен только
+    // аппаратный UART. По умолчанию используем Serial (GPIO1/TX0), но для
+    // отдельных пинов вызовите useHardwareSerial(&Serial1) или (&Serial2)
+    // ДО begin().
+    if (debug) Serial.println("ESP32: SoftwareSerial недоступен, используется аппаратный Serial. Для других пинов вызовите useHardwareSerial(&Serial1/&Serial2) до begin().");
+    hardSerial = &Serial;
+    hardSerial->begin(baud_rate);
+#endif
 }
 
 void Mercury::useHardwareSerial(HardwareSerial* port) {
     // Explicitly select a hardware UART (e.g. Serial / Serial1). When selected,
     // rxPin/txPin are ignored by begin().
     if (port == nullptr) return;
+#if MERCURY_HAS_SOFTWARE_SERIAL
     if (softSerial != nullptr) {
         softSerial->end();
         delete softSerial;
         softSerial = nullptr;
     }
+#endif
     hardSerial = port;
 }
 
 void Mercury::setPins(bool state) {
-    // Support modules that wire only DE or only RE: drive the present pin(s).
+    // Автоконвертеры RS-485 (без линий управления): оставьте dePin = rePin = -1 —
+    // тогда эта функция ничего не делает, направлением рулит сам модуль.
+    // MAX485 с ручным управлением: задайте dePin и/или rePin в конструкторе.
+    // Поддержаны модули, где выведен только DE или только RE: управляется
+    // любой из пинов по отдельности.
     if (dePin != -1) digitalWrite(dePin, state);
     if (rePin != -1) digitalWrite(rePin, !state);
 }
@@ -71,11 +105,12 @@ void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
     // Discard anything left in the RX buffer from previous timed-out / echoed
     // frames. Without this, a single stray byte offsets the whole response by
     // one position and every subsequent CRC check fails ("CRC error" forever).
-    while ((softSerial ? softSerial->available() : hardSerial->available()) > 0) {
-        (void)(softSerial ? softSerial->read() : hardSerial->read());
+    while (MERC_PORT_AVAILABLE() > 0) {
+        (void)MERC_PORT_READ();
     }
 
     setPins(true);
+#if MERCURY_HAS_SOFTWARE_SERIAL
     if (softSerial) {
         softSerial->write(fullCmd, s + 3);
         softSerial->flush();
@@ -83,6 +118,10 @@ void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
         hardSerial->write(fullCmd, s + 3);
         hardSerial->flush();
     }
+#else
+    hardSerial->write(fullCmd, s + 3);
+    hardSerial->flush();
+#endif
     // Give the transceiver time to switch from TX to RX before reading.
     delay(2);
     setPins(false);
@@ -90,25 +129,25 @@ void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
     // Wait until the first byte arrives (bounded by read_delay), then drain the
     // rest with a short inter-byte timeout instead of a fixed blind delay.
     unsigned long start = millis();
-    int available = softSerial ? softSerial->available() : hardSerial->available();
+    int available = MERC_PORT_AVAILABLE();
     while (available == 0 && (millis() - start) < (unsigned long)read_delay) {
         delay(1);
-        available = softSerial ? softSerial->available() : hardSerial->available();
+        available = MERC_PORT_AVAILABLE();
     }
 
     int responseLength = 0;
     unsigned long lastByteAt = millis();
-    available = softSerial ? softSerial->available() : hardSerial->available();
+    available = MERC_PORT_AVAILABLE();
     while (available > 0) {
-        byte received = softSerial ? softSerial->read() : hardSerial->read();
+        byte received = (byte)MERC_PORT_READ();
         response[responseLength++] = received;
         lastByteAt = millis();
         // wait for possible continuation bytes of the same frame
         while (available == 0 && (millis() - lastByteAt) < 10) {
             delay(1);
-            available = softSerial ? softSerial->available() : hardSerial->available();
+            available = MERC_PORT_AVAILABLE();
         }
-        available = softSerial ? softSerial->available() : hardSerial->available();
+        available = MERC_PORT_AVAILABLE();
     }
 
     if (debug) {

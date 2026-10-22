@@ -4,10 +4,12 @@ Mercury Library — это библиотека для работы с устр�
 
 ## Совместимость
 
-- Arduino
-- ESP8266
-- ESP32
-- STM32
+- Arduino (ATmega328 и другие платы с библиотекой SoftwareSerial)
+- ESP8266 (SoftwareSerial из ядра или аппаратный UART через `useHardwareSerial`)
+- ESP32 (аппаратный UART Serial1/Serial2 — в ядре ESP32 библиотеки SoftwareSerial нет, это учтено условиями компиляции)
+- STM32 (через реализацию HardwareSerial платформы; при отсутствии SoftwareSerial используйте `useHardwareSerial`)
+- RS-485 конвертеры с автоуправлением направлением (без управляющих линий): оставьте `dePin = rePin = -1`
+- RS-485 конвертеры с ручным управлением направлением (MAX485 и аналоги): задайте `dePin` и/или `rePin`
 
 ## Возможности и особенности
 
@@ -174,6 +176,30 @@ flowchart LR
     style F fill:#fce8e6,stroke:#ea4335
 ```
 
+### Выбор конфигурации: платформа и тип RS-485 конвертера
+
+Библиотека подстраивается под две независимые вещи: какой UART даёт платформа и умеет ли конвертер сам переключать направление. На схеме ниже — все поддерживаемые комбинации (условия компиляции `#if !defined(ESP32)` сами выбирают нужный путь).
+
+```mermaid
+flowchart TD
+    START([Mercury mercury rxPin txPin dePin rePin]) --> PLAT{Платформа}
+    PLAT -->|Arduino AVR / ESP8266| SOFT[SoftwareSerial на rxPin/txPin<br/>есть в ядре платформы]
+    PLAT -->|ESP32 / STM32| HW{Вызван useHardwareSerial<br/>до begin?}
+    HW -->|да Serial1 Serial2| PORT[Аппаратный UART<br/>на выбранных пинах]
+    HW -->|нет| DEF[Аппаратный Serial по умолчанию<br/>GPIO1/TX0 - предупреждение в debug]
+    SOFT --> DIR{Тип конвертера}
+    PORT --> DIR
+    DEF --> DIR
+    DIR -->|Автоуправление<br/>без DE/RE| AUTO[dePin = rePin = -1<br/>setPins ничего не делает<br/>направлением рулит модуль]
+    DIR -->|Ручное управление<br/>MAX485| MAN[dePin и/или rePin задан<br/>DE=1 на передачу DE=0 на приём<br/>flush + пауза 2 мс]
+
+    style SOFT fill:#e8f0fe,stroke:#4285f4
+    style PORT fill:#e8f0fe,stroke:#4285f4
+    style AUTO fill:#e6f4ea,stroke:#34a853
+    style MAN fill:#fef7e0,stroke:#fbbc04
+    style DEF fill:#fce8e6,stroke:#ea4335
+```
+
 ## Исправленные ошибки (CHANGELOG)
 
 Ниже — что именно было сломано в старом коде и как это выглядит теперь. Формат: **Было** → **Стало**.
@@ -297,6 +323,28 @@ unsigned long value = (response[3 + i * 4] & 0x3F) | (response[2 + i * 4] << 8) 
 **Было:** успех определялся только по `response[1] == 0x00`, что совпадало и при битом кадре.
 
 **Стало:** проверяется и эхо адреса: `if (response[0] == devId && response[1] == 0x00)`.
+
+### 9. Библиотека не собиралась на ESP32 (жёсткая зависимость от SoftwareSerial)
+
+**Было:** `#include <SoftwareSerial.h>` был unconditional, а в ядре ESP32 такой библиотеки нет — любая сборка под ESP32 падала ещё до начала работы:
+
+```cpp
+#include <Arduino.h>
+#include <SoftwareSerial.h>   // fatal error: No such file or directory (ESP32)
+```
+
+**Стало:** подключение и использование программного UART закрыто условием компиляции — на Arduino/ESP8266 работает SoftwareSerial, на ESP32 автоматически остаётся только аппаратный UART:
+
+```cpp
+#if !defined(ESP32)
+#define MERCURY_HAS_SOFTWARE_SERIAL 1
+#include <SoftwareSerial.h>
+#else
+#define MERCURY_HAS_SOFTWARE_SERIAL 0
+#endif
+```
+
+Все обращения к порту сведены к макросам `MERC_PORT_AVAILABLE()` / `MERC_PORT_READ()`, которые на ESP32 разворачиваются напрямую в `hardSerial->...`. Проверено реальной сборкой: UNO, NodeMCUv2 (ESP8266) и ESP32 компилируются без ошибок.
 
 ## Примеры использования методов
 
