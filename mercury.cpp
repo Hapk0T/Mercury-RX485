@@ -1,7 +1,7 @@
 #include "mercury.h"
 
 Mercury::Mercury(int rxPin, int txPin, int dePin, int rePin, bool enableDirInfo, bool debug)
-    : rxPin(rxPin), txPin(txPin), dePin(dePin), rePin(rePin), enableDirInfo(enableDirInfo), debug(debug), devId(0), softSerial(nullptr), hardSerial(nullptr) {}
+    : rxPin(rxPin), txPin(txPin), dePin(dePin), rePin(rePin), enableDirInfo(enableDirInfo), debug(debug), devId(0), dir_a(false), dir_r(false), connected(false), softSerial(nullptr), hardSerial(nullptr) {}
 
 void Mercury::begin(byte id, long baud_rate, int read_delay, int send_delay) {
     this->devId = id;
@@ -9,26 +9,45 @@ void Mercury::begin(byte id, long baud_rate, int read_delay, int send_delay) {
     this->read_delay = read_delay;
     this->send_delay = send_delay;
 
-    if (dePin != -1 && rePin != -1) {
-        pinMode(dePin, OUTPUT);
-        pinMode(rePin, OUTPUT);
+    if (dePin != -1 || rePin != -1) {
+        if (dePin != -1) pinMode(dePin, OUTPUT);
+        if (rePin != -1) pinMode(rePin, OUTPUT);
         setPins(false);
     }
 
-    if (softSerial == nullptr) {
+    // NOTE: previously the hardware-serial branch was unreachable dead code:
+    // softSerial was always nullptr on first begin(), so HardwareSerial (&Serial)
+    // was never used and a second begin() leaked the old SoftwareSerial.
+    if (hardSerial != nullptr) {
+        // caller opted into hardware UART via useHardwareSerial()
+        hardSerial->begin(baud_rate);
+    } else if (softSerial == nullptr) {
         softSerial = new SoftwareSerial(rxPin, txPin);
         softSerial->begin(baud_rate);
     } else {
-        hardSerial = &Serial;
-        hardSerial->begin(baud_rate);
+        softSerial->end();
+        delete softSerial;
+        softSerial = new SoftwareSerial(rxPin, txPin);
+        softSerial->begin(baud_rate);
     }
 }
 
-void Mercury::setPins(bool state) {
-    if (dePin != -1 && rePin != -1) {
-        digitalWrite(dePin, state);
-        digitalWrite(rePin, !state);
+void Mercury::useHardwareSerial(HardwareSerial* port) {
+    // Explicitly select a hardware UART (e.g. Serial / Serial1). When selected,
+    // rxPin/txPin are ignored by begin().
+    if (port == nullptr) return;
+    if (softSerial != nullptr) {
+        softSerial->end();
+        delete softSerial;
+        softSerial = nullptr;
     }
+    hardSerial = port;
+}
+
+void Mercury::setPins(bool state) {
+    // Support modules that wire only DE or only RE: drive the present pin(s).
+    if (dePin != -1) digitalWrite(dePin, state);
+    if (rePin != -1) digitalWrite(rePin, !state);
 }
 
 void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
@@ -49,19 +68,47 @@ void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
         Serial.println();
     }
 
+    // Discard anything left in the RX buffer from previous timed-out / echoed
+    // frames. Without this, a single stray byte offsets the whole response by
+    // one position and every subsequent CRC check fails ("CRC error" forever).
+    while ((softSerial ? softSerial->available() : hardSerial->available()) > 0) {
+        (void)(softSerial ? softSerial->read() : hardSerial->read());
+    }
+
     setPins(true);
     if (softSerial) {
         softSerial->write(fullCmd, s + 3);
+        softSerial->flush();
     } else {
         hardSerial->write(fullCmd, s + 3);
+        hardSerial->flush();
     }
+    // Give the transceiver time to switch from TX to RX before reading.
+    delay(2);
     setPins(false);
 
-    delay(read_delay);
+    // Wait until the first byte arrives (bounded by read_delay), then drain the
+    // rest with a short inter-byte timeout instead of a fixed blind delay.
+    unsigned long start = millis();
+    int available = softSerial ? softSerial->available() : hardSerial->available();
+    while (available == 0 && (millis() - start) < (unsigned long)read_delay) {
+        delay(1);
+        available = softSerial ? softSerial->available() : hardSerial->available();
+    }
+
     int responseLength = 0;
-    while (softSerial ? softSerial->available() : hardSerial->available()) {
+    unsigned long lastByteAt = millis();
+    available = softSerial ? softSerial->available() : hardSerial->available();
+    while (available > 0) {
         byte received = softSerial ? softSerial->read() : hardSerial->read();
         response[responseLength++] = received;
+        lastByteAt = millis();
+        // wait for possible continuation bytes of the same frame
+        while (available == 0 && (millis() - lastByteAt) < 10) {
+            delay(1);
+            available = softSerial ? softSerial->available() : hardSerial->available();
+        }
+        available = softSerial ? softSerial->available() : hardSerial->available();
     }
 
     if (debug) {
@@ -73,12 +120,26 @@ void Mercury::sendCmd(byte addr, byte* cmd, int s, byte* response) {
         Serial.println();
     }
 
+    // Guard against empty/partial responses: previously response[-2]/response[-1]
+    // were read on an untouched buffer (undefined behaviour -> random "found"
+    // addresses in search(), garbage values, crashes on some cores).
+    if (responseLength < 3) {
+        if (debug) {
+            Serial.println("Нет ответа (таймаут)");
+        }
+        response[0] = 0;
+        return;
+    }
+
     unsigned int receivedCrc = (response[responseLength - 2] | (response[responseLength - 1] << 8));
     unsigned int calculatedCrc = crc16MODBUS(response, responseLength - 2);
     if (receivedCrc != calculatedCrc) {
         if (debug) {
             Serial.println("CRC error");
         }
+        // Keep raw bytes but mark the frame as invalid so callers don't silently
+        // parse shifted/garbage data as if it were valid.
+        response[0] = 0;
     } else {
         responseLength -= 2;
         response[responseLength] = 0;
@@ -131,16 +192,23 @@ unsigned int Mercury::crc16MODBUS(byte* s, int count) {
 }
 
 void Mercury::search() {
-    byte response[4];
-    for (int addr = 1; addr <= 127; addr++) {
+    byte response[8];
+    bool found = false;
+    // Scan the full address range supported by Меркурий: 0..254.
+    // The old code scanned only 1..127, so meters with addresses >=128
+    // (very common: 170/0xAA, 250, 254...) or the factory default address 0
+    // could NEVER be found — after a failed search every request kept going
+    // to the previous devId and the meter stayed silent ("не видит счётчик").
+    for (int addr = 0; addr <= 254; addr++) {
         byte cmd[] = { 0x00 };
         sendCmd(addr, cmd, sizeof(cmd), response);
 
         if (response[0] == addr && response[1] == 0x00) {
             devId = addr;
+            found = true;
             if (debug) {
                 Serial.print("Найден адрес: ");
-                Serial.println(devId, HEX);
+                Serial.println(devId, DEC);
                 Serial.print("Ответ: ");
                 Serial.print(response[1], HEX);
                 Serial.println();
@@ -154,22 +222,29 @@ void Mercury::search() {
             }
         }
     }
+    if (!found && debug) {
+        Serial.println("Счётчик не найден в диапазоне 0..254");
+    }
     delay(read_delay);
 }
 
 void Mercury::connect(byte level, const char* password) {
-    byte response[4];
+    byte response[8];
     byte cmd[] = { 0x01, level, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01 };
     for (int i = 0; i < 6; i++) {
         cmd[2 + i] = password[i] - '0';
     }
     sendCmd(devId, cmd, sizeof(cmd), response);
 
-    if (response[1] == 0x00) {
+    // sendCmd zeroes response[0] on timeout/CRC failure, so a valid open
+    // frame is recognised by the echoed address, not just response[1].
+    if (response[0] == devId && response[1] == 0x00) {
+        connected = true;
         if (debug) {
             Serial.println("Соединение установлено");
         }
     } else {
+        connected = false;
         if (debug) {
             Serial.println("Ошибка соединения");
         }
@@ -251,12 +326,14 @@ float* Mercury::powerFactor() {
 
 float* Mercury::voltage() {
     static float voltage[3];
-    byte response[4];
+    byte response[16];   // was [4]: a real reply frame is longer and overflowed the stack buffer
     byte cmd[] = { 0x08, 0x16, 0x11 };
 
     for (int i = 0; i < 3; i++) {
         cmd[2] = 0x11 + i;
+        memset(response, 0, sizeof(response));
         sendCmd(devId, cmd, sizeof(cmd), response);
+        if (response[0] == 0) { voltage[i] = 0; continue; }  // timeout/CRC error
         unsigned long value = (response[3] << 8) | response[2];
         voltage[i] = value * 0.01;
         delay(send_delay);
@@ -278,18 +355,22 @@ float* Mercury::current() {
 }
 
 float Mercury::frequency() {
-    byte response[4];
+    byte response[16];
+    memset(response, 0, sizeof(response));
     byte cmd[] = { 0x08, 0x11, 0x40 };
     sendCmd(devId, cmd, sizeof(cmd), response);
+    if (response[0] == 0) return 0;  // timeout/CRC error
     unsigned long value = (response[3] & 0x3F) << 8 | response[2];
     return value / 100.0;
 }
 
 int Mercury::temperature() {
-    byte response[3];
+    byte response[16];
+    memset(response, 0, sizeof(response));
     byte cmd[] = { 0x08, 0x11, 0x70 };
     sendCmd(devId, cmd, sizeof(cmd), response);
-    return response[2];
+    if (response[0] == 0) return 0;  // timeout/CRC error
+    return (signed char)response[2];  // temperature is signed in Меркурий
 }
 
 float* Mercury::energyTaAr() {
